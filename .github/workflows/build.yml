@@ -1,0 +1,827 @@
+name: Build APK
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Susun proyek
+        run: |
+          mkdir -p app/src/main/java/com/adjm/scan app/src/main/res/drawable-nodpi
+          cat > settings.gradle <<'EOF_ADJM'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'ADJMScan'
+          include ':app'
+          EOF_ADJM
+          cat > build.gradle <<'EOF_ADJM'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF_ADJM
+          cat > gradle.properties <<'EOF_ADJM'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF_ADJM
+          cat > app/build.gradle <<'EOF_ADJM'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.adjm.scan'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.adjm.scan'
+                  minSdk 27
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          EOF_ADJM
+          cat > app/src/main/AndroidManifest.xml <<'EOF_ADJM'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+              <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+              <application
+                  android:label="ADJM Scan"
+                  android:icon="@drawable/ic_launcher"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:launchMode="singleTask">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_ADJM
+          cat > app/src/main/java/com/adjm/scan/RadarView.java <<'EOF_ADJM'
+          package com.adjm.scan;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Matrix;
+          import android.graphics.Paint;
+          import android.graphics.SweepGradient;
+          import android.view.View;
+          import java.util.ArrayList;
+          import java.util.List;
+
+          public class RadarView extends View {
+              private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint tp = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Paint sw = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Matrix m = new Matrix();
+              private float sweep = 45f;
+              private boolean running = false;
+              private long lastT = 0;
+              private List<float[]> blips = new ArrayList<>();
+
+              public RadarView(Context c) {
+                  super(c);
+                  tp.setTextAlign(Paint.Align.CENTER);
+              }
+
+              public void setRunning(boolean r) {
+                  running = r;
+                  lastT = 0;
+                  invalidate();
+              }
+
+              public void setBlips(List<float[]> b) {
+                  blips = b;
+                  invalidate();
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  int w = getWidth(), h = getHeight();
+                  float side = Math.min(w, h);
+                  float cx = w / 2f, cy = h / 2f, half = side / 2f;
+
+                  p.setStyle(Paint.Style.FILL);
+                  p.setColor(0xFF262626);
+                  c.drawRect(cx - half, cy - half, cx + half, cy + half, p);
+                  p.setColor(0xFF7A7A7A);
+                  c.drawRect(cx - half, cy - half, cx + half, cy - half + side * 0.02f, p);
+                  float in = side * 0.035f;
+                  p.setColor(0xFF062B0C);
+                  c.drawRect(cx - half + in, cy - half + in, cx + half - in, cy + half - in, p);
+
+                  float R = (half - in) * 0.84f;
+
+                  p.setStyle(Paint.Style.STROKE);
+                  p.setStrokeWidth(Math.max(1f, side * 0.003f));
+                  p.setColor(0x7738D84A);
+                  for (int i = 1; i < 8; i++) c.drawCircle(cx, cy, R * i / 8f, p);
+                  for (int a = 0; a < 360; a += 15) {
+                      double r = Math.toRadians(a);
+                      float s = (float) Math.sin(r), co = (float) Math.cos(r);
+                      c.drawLine(cx + R * 0.1f * s, cy - R * 0.1f * co, cx + R * s, cy - R * co, p);
+                  }
+                  p.setStrokeWidth(Math.max(2f, side * 0.006f));
+                  p.setColor(0xFF3BE04F);
+                  c.drawCircle(cx, cy, R, p);
+                  c.drawCircle(cx, cy, R * 0.1f, p);
+
+                  tp.setTextSize(side * 0.034f);
+                  tp.setColor(0xAA3BE04F);
+                  for (int a = 0; a < 360; a += 15) {
+                      c.save();
+                      c.rotate(a, cx, cy);
+                      c.drawText(String.valueOf(a), cx, cy - R * 1.05f, tp);
+                      c.restore();
+                  }
+
+                  if (running) {
+                      long now = System.nanoTime();
+                      float dt = lastT == 0 ? 0f : (now - lastT) / 1e9f;
+                      if (dt > 0.1f) dt = 0.1f;
+                      lastT = now;
+                      sweep = (sweep + 90f * dt) % 360f;
+                  }
+
+                  int[] cols = {0x0000FF00, 0x0000FF00, 0xAA3BFF4F};
+                  float[] pos = {0f, 0.8f, 1f};
+                  SweepGradient g = new SweepGradient(cx, cy, cols, pos);
+                  m.setRotate(sweep - 90f, cx, cy);
+                  g.setLocalMatrix(m);
+                  sw.setStyle(Paint.Style.FILL);
+                  sw.setShader(g);
+                  c.drawCircle(cx, cy, R, sw);
+                  double sr = Math.toRadians(sweep);
+                  p.setStrokeWidth(Math.max(2f, side * 0.005f));
+                  p.setColor(0xFF7CFF8C);
+                  c.drawLine(cx, cy, cx + R * (float) Math.sin(sr), cy - R * (float) Math.cos(sr), p);
+
+                  p.setStyle(Paint.Style.FILL);
+                  for (float[] b : blips) {
+                      double ar = Math.toRadians(b[0]);
+                      float x = cx + R * b[1] * (float) Math.sin(ar);
+                      float y = cy - R * b[1] * (float) Math.cos(ar);
+                      float al = 1f;
+                      if (running) {
+                          float delta = (sweep - b[0] + 360f) % 360f;
+                          al = 1f - delta / 360f * 0.75f;
+                      }
+                      int a1 = (int) (al * 90), a2 = (int) (al * 255);
+                      p.setColor((a1 << 24) | 0x3BFF4F);
+                      c.drawCircle(x, y, side * 0.026f, p);
+                      p.setColor((a2 << 24) | 0xB8FFB8);
+                      c.drawCircle(x, y, side * 0.011f, p);
+                  }
+
+                  if (running) postInvalidateOnAnimation();
+              }
+          }
+          EOF_ADJM
+          cat > app/src/main/java/com/adjm/scan/MainActivity.java <<'EOF_ADJM'
+          package com.adjm.scan;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.IntentFilter;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
+          import android.location.LocationManager;
+          import android.net.wifi.ScanResult;
+          import android.net.wifi.WifiInfo;
+          import android.net.wifi.WifiManager;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.SystemClock;
+          import android.provider.Settings;
+          import android.util.DisplayMetrics;
+          import android.util.TypedValue;
+          import android.view.Gravity;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.HashSet;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Set;
+
+          public class MainActivity extends Activity {
+              private static final int REQ = 7;
+              private WifiManager wm;
+              private RadarView radar;
+              private LinearLayout list;
+              private ScrollView sv;
+              private TextView count;
+              private float d;
+              private boolean scanning = false, receiverOn = false;
+              private final Handler h = new Handler(Looper.getMainLooper());
+              private final Set<String> open = new HashSet<>();
+              private List<ScanResult> last = new ArrayList<>();
+
+              private final BroadcastReceiver rec = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context c, Intent i) {
+                      if (scanning) load();
+                  }
+              };
+              private final Runnable fallback = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (scanning) load();
+                  }
+              };
+              private final Runnable loop = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (!scanning) return;
+                      try { wm.startScan(); } catch (Exception e) { }
+                      h.postDelayed(fallback, 3500);
+                      h.postDelayed(this, 7000);
+                  }
+              };
+
+              private int dp(int v) { return (int) (v * d + 0.5f); }
+
+              private TextView tv(String t, int sp, int col, boolean bold) {
+                  TextView v = new TextView(this);
+                  v.setText(t);
+                  v.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+                  v.setTextColor(col);
+                  if (bold) v.setTypeface(Typeface.DEFAULT_BOLD);
+                  return v;
+              }
+
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                  d = getResources().getDisplayMetrics().density;
+                  getWindow().setStatusBarColor(Color.BLACK);
+                  getWindow().setNavigationBarColor(Color.BLACK);
+                  DisplayMetrics dm = getResources().getDisplayMetrics();
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(Color.BLACK);
+                  root.setPadding(dp(12), dp(8), dp(12), dp(10));
+
+                  TextView title = tv("ADJM - Scan", 26, Color.WHITE, false);
+                  title.setGravity(Gravity.CENTER);
+                  root.addView(title, new LinearLayout.LayoutParams(-1, -2));
+
+                  radar = new RadarView(this);
+                  int rh = Math.min(dm.widthPixels - dp(24), (int) (dm.heightPixels * 0.36f));
+                  LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, rh);
+                  rp.topMargin = dp(6);
+                  root.addView(radar, rp);
+
+                  LinearLayout row = new LinearLayout(this);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  row.setPadding(0, dp(10), 0, 0);
+                  row.addView(btn("PINDAI", v -> startScan()), new LinearLayout.LayoutParams(0, -2, 1));
+                  row.addView(btn("STOP", v -> stopScan()), new LinearLayout.LayoutParams(0, -2, 1));
+                  row.addView(btn("RELOAD", v -> reload()), new LinearLayout.LayoutParams(0, -2, 1));
+                  root.addView(row, new LinearLayout.LayoutParams(-1, -2));
+
+                  LinearLayout rr = new LinearLayout(this);
+                  rr.setOrientation(LinearLayout.HORIZONTAL);
+                  rr.setPadding(0, dp(10), 0, dp(4));
+                  rr.addView(tv("RESULTS", 16, Color.WHITE, true), new LinearLayout.LayoutParams(0, -2, 1));
+                  count = tv("", 13, 0xFF9FD0FF, false);
+                  rr.addView(count, new LinearLayout.LayoutParams(-2, -2));
+                  root.addView(rr, new LinearLayout.LayoutParams(-1, -2));
+
+                  FrameLayout frame = new FrameLayout(this);
+                  frame.setBackgroundColor(0xFF0F3D55);
+                  frame.setPadding(dp(5), dp(5), dp(5), dp(5));
+                  sv = new ScrollView(this);
+                  sv.setBackgroundColor(0xFF0F4A75);
+                  list = new LinearLayout(this);
+                  list.setOrientation(LinearLayout.VERTICAL);
+                  sv.addView(list, new ViewGroup.LayoutParams(-1, -2));
+                  frame.addView(sv, new FrameLayout.LayoutParams(-1, -1));
+                  root.addView(frame, new LinearLayout.LayoutParams(-1, 0, 1));
+
+                  setContentView(root);
+                  showHint("Tekan PINDAI untuk mulai memindai jaringan Wi-Fi di sekitar.");
+              }
+
+              private View btn(String label, View.OnClickListener l) {
+                  LinearLayout c = new LinearLayout(this);
+                  c.setOrientation(LinearLayout.VERTICAL);
+                  c.setGravity(Gravity.CENTER_HORIZONTAL);
+                  View k = new View(this);
+                  GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                          new int[]{0xFFFF7A7A, 0xFFFF2020, 0xFFF00000});
+                  g.setStroke(dp(3), 0xFF1E9BF0);
+                  k.setBackground(g);
+                  c.addView(k, new LinearLayout.LayoutParams(dp(70), dp(38)));
+                  TextView t = tv(label, 15, Color.WHITE, true);
+                  LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(-2, -2);
+                  tp.topMargin = dp(6);
+                  c.addView(t, tp);
+                  c.setOnClickListener(l);
+                  c.setOnTouchListener((v, e) -> {
+                      int a = e.getAction();
+                      if (a == MotionEvent.ACTION_DOWN) v.setAlpha(0.6f);
+                      else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) v.setAlpha(1f);
+                      return false;
+                  });
+                  return c;
+              }
+
+              private void showHint(String s) {
+                  list.removeAllViews();
+                  TextView t = tv(s, 14, Color.WHITE, false);
+                  t.setPadding(dp(14), dp(16), dp(14), dp(16));
+                  list.addView(t);
+              }
+
+              private boolean locationOn() {
+                  try {
+                      LocationManager lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+                      if (Build.VERSION.SDK_INT >= 28) return lm.isLocationEnabled();
+                      return lm.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                              || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+                  } catch (Exception e) {
+                      return true;
+                  }
+              }
+
+              private void startScan() {
+                  if (scanning) return;
+                  if (Build.VERSION.SDK_INT >= 23
+                          && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ);
+                      return;
+                  }
+                  if (!wm.isWifiEnabled()) {
+                      if (Build.VERSION.SDK_INT < 29) {
+                          try { wm.setWifiEnabled(true); } catch (Exception e) { }
+                      } else {
+                          showHint("Wi-Fi sedang mati. Aktifkan Wi-Fi, lalu tekan PINDAI.");
+                          return;
+                      }
+                  }
+                  if (!locationOn()) {
+                      showHint("Lokasi (GPS) sedang mati. Android mewajibkan Lokasi aktif agar hasil pemindaian Wi-Fi bisa dibaca. Aktifkan Lokasi, lalu kembali dan tekan PINDAI.");
+                      try { startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); } catch (Exception e) { }
+                      return;
+                  }
+                  scanning = true;
+                  if (!receiverOn) {
+                      registerReceiver(rec, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+                      receiverOn = true;
+                  }
+                  radar.setRunning(true);
+                  if (last.isEmpty()) showHint("Memindai...");
+                  h.post(loop);
+              }
+
+              private void stopScan() {
+                  scanning = false;
+                  h.removeCallbacks(loop);
+                  h.removeCallbacks(fallback);
+                  radar.setRunning(false);
+                  if (receiverOn) {
+                      try { unregisterReceiver(rec); } catch (Exception e) { }
+                      receiverOn = false;
+                  }
+              }
+
+              private void reload() {
+                  stopScan();
+                  last = new ArrayList<>();
+                  open.clear();
+                  radar.setBlips(new ArrayList<float[]>());
+                  count.setText("");
+                  showHint("Memuat ulang...");
+                  startScan();
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+                  super.onRequestPermissionsResult(code, perms, res);
+                  if (code == REQ) {
+                      if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) startScan();
+                      else showHint("Izin Lokasi diperlukan oleh Android untuk membaca daftar Wi-Fi. Tekan PINDAI lalu pilih Izinkan.");
+                  }
+              }
+
+              @Override
+              protected void onPause() {
+                  super.onPause();
+                  stopScan();
+              }
+
+              @Override
+              protected void onDestroy() {
+                         stopScan();
+                  super.onDestroy();
+              }
+
+              private void load() {
+                  List<ScanResult> r;
+                  try {
+                      r = wm.getScanResults();
+                  } catch (Exception e) {
+                      return;
+                  }
+                  if (r == null) return;
+                  last = new ArrayList<>(r);
+                  Collections.sort(last, (a, b) -> b.level - a.level);
+                  render();
+              }
+
+              private void render() {
+                  final int y = sv.getScrollY();
+                  list.removeAllViews();
+                  List<float[]> bl = new ArrayList<>();
+                  count.setText(last.size() + " jaringan");
+                  if (last.isEmpty()) {
+                      showHint("Belum ada jaringan Wi-Fi yang terdeteksi.");
+                      radar.setBlips(bl);
+                      return;
+                  }
+                  String cur = null;
+                  try {
+                      WifiInfo wi = wm.getConnectionInfo();
+                      if (wi != null) cur = wi.getBSSID();
+                  } catch (Exception e) { }
+                  for (ScanResult s : last) {
+                      list.addView(item(s, cur));
+                      bl.add(blip(s));
+                  }
+                  radar.setBlips(bl);
+                  sv.post(() -> sv.scrollTo(0, y));
+              }
+
+              private float[] blip(ScanResult s) {
+                  String id = s.BSSID == null ? "" : s.BSSID;
+                  float ang = (id.hashCode() & 0x7fffffff) % 360;
+                  float t = (-30f - s.level) / 65f;
+                  if (t < 0f) t = 0f;
+                  if (t > 1f) t = 1f;
+                  return new float[]{ang, 0.12f + 0.85f * t};
+              }
+
+              private View item(ScanResult s, String cur) {
+                  final String id = s.BSSID == null ? "" : s.BSSID;
+                  boolean conn = cur != null && id.equalsIgnoreCase(cur);
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(dp(12), dp(10), dp(12), dp(10));
+                  box.setBackgroundColor(0xFF1A72B5);
+
+                  LinearLayout head = new LinearLayout(this);
+                  head.setOrientation(LinearLayout.HORIZONTAL);
+                  head.setGravity(Gravity.CENTER_VERTICAL);
+                  LinearLayout left = new LinearLayout(this);
+                  left.setOrientation(LinearLayout.VERTICAL);
+                  left.addView(tv(ssid(s) + (conn ? "  [TERHUBUNG]" : ""), 16, Color.WHITE, true));
+                  left.addView(tv(s.level + " dBm  |  " + band(s.frequency) + "  |  Ch " + chan(s.frequency) + "  |  " + sec(s.capabilities),
+                          12, 0xFFD6EBFF, false));
+                  head.addView(left, new LinearLayout.LayoutParams(0, -2, 1));
+                  int pct = pct(s.level);
+                  head.addView(tv(pct + "%", 16, pct >= 70 ? 0xFF6DFF6D : pct >= 40 ? 0xFFFFE94D : 0xFFFF7B7B, true),
+                          new LinearLayout.LayoutParams(-2, -2));
+                  box.addView(head);
+
+                  final TextView det = tv(detail(s, conn), 13, Color.WHITE, false);
+                  det.setPadding(0, dp(8), 0, 0);
+                  det.setVisibility(open.contains(id) ? View.VISIBLE : View.GONE);
+                  box.addView(det);
+                  box.setOnClickListener(v -> {
+                      if (open.contains(id)) {
+                          open.remove(id);
+                          det.setVisibility(View.GONE);
+                      } else {
+                          open.add(id);
+                          det.setVisibility(View.VISIBLE);
+                      }
+                  });
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+                  lp.bottomMargin = dp(2);
+                  box.setLayoutParams(lp);
+                  return box;
+              }
+
+              private String ssid(ScanResult s) {
+                  String n = s.SSID;
+                  return (n == null || n.isEmpty()) ? "(Jaringan tersembunyi)" : n;
+              }
+
+              private int pct(int level) {
+                  int p = 2 * (level + 100);
+                  return p < 0 ? 0 : (p > 100 ? 100 : p);
+              }
+
+              private String band(int f) {
+                  return f < 3000 ? "2.4 GHz" : (f < 5900 ? "5 GHz" : "6 GHz");
+              }
+
+              private int chan(int f) {
+                  if (f == 2484) return 14;
+                  if (f < 3000) return (f - 2407) / 5;
+                  if (f < 5900) return (f - 5000) / 5;
+                  return (f - 5950) / 5;
+              }
+
+              private String sec(String cap) {
+                  String c = cap == null ? "" : cap;
+                  List<String> p = new ArrayList<>();
+                  if (c.contains("[WPA-") || c.contains("[WPA]")) p.add("WPA");
+                  if (c.contains("WPA2") || c.contains("RSN")) p.add("WPA2");
+                  if (c.contains("WPA3") || c.contains("SAE")) p.add("WPA3");
+                  if (!p.isEmpty()) {
+                      StringBuilder sb = new StringBuilder();
+                      for (String x : p) {
+                          if (sb.length() > 0) sb.append("/");
+                          sb.append(x);
+                      }
+                      return sb.toString();
+                  }
+                  if (c.contains("WEP")) return "WEP";
+                  if (c.contains("OWE")) return "OWE";
+                  return "Terbuka";
+              }
+
+              private String width(ScanResult s) {
+                  switch (s.channelWidth) {
+                      case ScanResult.CHANNEL_WIDTH_20MHZ: return "20 MHz";
+                      case ScanResult.CHANNEL_WIDTH_40MHZ: return "40 MHz";
+                      case ScanResult.CHANNEL_WIDTH_80MHZ: return "80 MHz";
+                      case ScanResult.CHANNEL_WIDTH_160MHZ: return "160 MHz";
+                      case ScanResult.CHANNEL_WIDTH_80MHZ_PLUS_MHZ: return "80+80 MHz";
+                      default: return "-";
+                  }
+              }
+
+              private String standard(ScanResult s) {
+                  if (Build.VERSION.SDK_INT < 30) return "Tidak tersedia di versi Android ini";
+                  switch (s.getWifiStandard()) {
+                      case 1: return "Legacy (802.11a/b/g)";
+                      case 4: return "Wi-Fi 4 (802.11n)";
+                      case 5: return "Wi-Fi 5 (802.11ac)";
+                      case 6: return "Wi-Fi 6 (802.11ax)";
+                      case 7: return "802.11ad";
+                      case 8: return "Wi-Fi 7 (802.11be)";
+                      default: return "Tidak diketahui";
+                  }
+              }
+
+              private String detail(ScanResult s, boolean conn) {
+                  int pct = pct(s.level);
+                  String q = pct >= 80 ? "Sangat baik" : pct >= 60 ? "Baik" : pct >= 40 ? "Cukup" : "Lemah";
+                  double dist = Math.pow(10.0, (27.55 - 20.0 * Math.log10(s.frequency) + Math.abs(s.level)) / 20.0);
+                  long age = (SystemClock.elapsedRealtime() * 1000L - s.timestamp) / 1000000L;
+                  if (age < 0) age = 0;
+                  String cap = s.capabilities == null ? "" : s.capabilities;
+                  StringBuilder sb = new StringBuilder();
+                  sb.append("Nama (SSID)  : ").append(ssid(s)).append('\n');
+                  sb.append("BSSID (MAC)  : ").append(s.BSSID).append('\n');
+                  sb.append("Status       : ").append(conn ? "Terhubung" : "Tidak terhubung").append('\n');
+                  sb.append("Sinyal       : ").append(s.level).append(" dBm (").append(pct).append("%, ").append(q).append(")\n");
+                  sb.append("Frekuensi    : ").append(s.frequency).append(" MHz (").append(band(s.frequency)).append(")\n");
+                  sb.append("Kanal        : ").append(chan(s.frequency)).append('\n');
+                  sb.append("Lebar kanal  : ").append(width(s)).append('\n');
+                  if (s.centerFreq0 > 0) sb.append("Frek. tengah : ").append(s.centerFreq0).append(" MHz\n");
+                  sb.append("Keamanan     : ").append(sec(cap)).append('\n');
+                  sb.append("WPS          : ").append(cap.contains("WPS") ? "Aktif" : "Tidak").append('\n');
+                  sb.append("Standar      : ").append(standard(s)).append('\n');
+                  sb.append("Jarak (kira2): ").append(String.format(Locale.US, "%.1f", dist)).append(" m\n");
+                  sb.append("Terlihat     : ").append(age).append(" detik lalu\n");
+                  sb.append("Capabilities : ").append(cap);
+                  return sb.toString();
+              }
+          }
+          EOF_ADJM
+          base64 -d > app/src/main/res/drawable-nodpi/ic_launcher.png <<'EOF_ICON'
+          iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAMAAABlApw1AAADAFBMVEUOOBERRhIXVhj6BAUjWCQn
+          ZykUZhQRdhEEJwYVhhXUAQAdViEpdyoqhyv+d3cTxhEuly8UlhMTpxJ7qoYUtxL/BgYwpjL3Ghn/
+          Zmb/gIClGw1ym3Z2Ig2CfWAV1BMdZSKApYIbSiEv1i4hVh0chiMttS4uxjAhhhxEpUYddiEhTSM7
+          pUMclSOCfV4hZx0hdhwTMyEu5C0htR0bpCUilhw5m0JEmkQhTBwgqBxCpTwbtCshyBsh2RtR+mf/
+          RkYd1SMdxSc5tEM1y0Uy10M15ExGdkv/NjYZLiBFhUdBmz1Etj1B10dE5lb/Nzca5BdDtURyHQg2
+          iUFFw0j/LCz/R0f/VlYhLhoyaUJMWTZGakRAhj5WhGBE0zhN9V5jWztpZEZ9eFqNOCK+BwG0Khz/
+          aGge4iAgMxkkPyQockgi5x8/7mAz8k9Afz9CyD1O7WFji2hvoX18sIhl/3OOQCq1LyGhMyDBJRn/
+          AAD/KSn/NTX/VFQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAADbc0ceAAABAHRSTlP////6/////////v////7////////J///Z////////////
+          //////////////////////////////////////7/////////+v///////9H///////rY/v//////
+          /////////////////////////////////////7rJq9kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+          AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlp1C1AAA
+          JQxJREFUeNrtfYd7JMd1Z1exqhrN6jr0QHD7bN3taDAJA0DA5uXucplJURIpWZacc7rkO9sX7At/
+          /b1YXY2dReBi4d3vU5MEB2F63q/q5VBd/d9vf/Wrf/uOXv/vV99+W3370Ue/929+6928/vajj76q
+          vv0KALyj1+999NVX1f/55Vcf/e07CuCjr375y+o33nvvvd98Ry8g/T0C8M9/+Od/8Zc//OG/f73r
+          h3yNf1L+5tz1Wh/2l3/x53/4LxnA//xPX/7J9/77996l65++/vIP/lcG8Ff+j778/g++94NLr+t9
+          yCV//tIdf3Dl63s/+P6Xf+T/ZgAQ3R/84/ffqetPvIsDgH9XwWXexHXV285m8C9cV73vDCn+7TGA
+          d+za2bkdAOYNYrgNAMb7dxtASMmadwWAsd6fJzYsUkCGfSN8daMAojHtJtXnl3uaWjuI3c4OA21D
+          683bBSD+YhGOu0U6T5dN7cuU+rZ9/LYBsPVJ053UQu6gr20II6vAgt22KbxlAGCpU9c3HQEguoFI
+          +BFd8GJd18FaweEBwenbAGCnkM3T1Aa+NkB2f3x8fEik98seruVPlkt40XUAA+DZtrVvxQ7sDBDs
+          qTW2TkR6l9opILEWf9TUdd003aSZAI6f//ywT7AZ4UZ062sBYI7eGVRoWHSw1KB0bGQ5ABrhj4Db
+          A0KocXPqhFuyXC1P6puA8FoA3NdZvQCZAZb+027BVAkAR18RAFAOAGpCgtuxd3/56XE34iJj5+YW
+          AYAmBxENonFC2x12qSaW4d8yAJLnds1EM+21QGga4Ke+G8yG8aCBzS0BAHZBDdM0SCgsPkhrE4Rm
+          wwBAUJ0HQBa2BsmdnLAoECMxmmbyAORatgH3sE3XtQ3fFQBozAA+zmQSQEa7HnnBEhbW/0+Y9Ojp
+          uzbpmjfNw67J+4BcBfvw8+MONhKWpJl022zem9kBWK2wxuVsu6fMBsQ1sOzeOnfkmHRhoQ2LAFAM
+          i44w1g/rgZ+a/tNPgRdt6haL1t+WDACCGni+7h7D10HlWGQbZCJbAlgMzC9fu2bdFPIARiKRghq8
+          ptsAUAP5Xwc0SgaUKRjXOZLNHI2vKn49AAgZAFLfpC7vQ9P/5GkK9cbejhYismD1jx95iniB/c3M
+          OV5vy/xk2WFAUUi43o3KcC0mAb6CEmj0ZwChb+ztqVGQXRBdZZ5gHcTYDkW4ItItkW5IFEDga2X+
+          icpwkJXHnwmoyXIF0nxrQtwdJiurbaInXrFkeJ2PMVrLUmyFhViIgco1ktx1hTysO9QFuA/Ng+Wn
+          1w3eviMA03bodBL7G2CdiGofUKHqjD6aStmfAIIaZUMchF064p21shNIQ1ZIq/56m/CdAIARPpTN
+          NuCTHVU7M4dYAnpBsB/0C/maXYkMQDdj3Q0GGvAsiKsm+6ufXEsTXQOAYSOJC/3jx62VFQanHt1R
+          cP7rtkYP2YgHNJupM5QB1NkYoDWu12zaWJ67BaGaTCbL3+2uwUZXBwCyiEEsGtbjPjCZ1qGk7rBd
+          Q2vVUuzFAI7OAwh1GBkDNghdLTtDUg7/AYI+x2rmxgAYu9kkdLZsOmRBm0VLasfR+qcGqVgsBh56
+          GUCodRvw5Zp4pqM9qFEImsmkI1W1t1rWzJ/tpZ7FVQGASofPaJMx6ecd86jzrPcjXhAKNJNnzx6g
+          VyFZS/ZHSYiZzTOANXJQs6bvWZUmEeF+Qluxf7ACBKY96SebSwLnqwLwECwCjwdYfxJUoJ/tFgBo
+          I+rLxeTZF//lM7BF7EGwRTbnADSDJ5dNAVqAjv8CJAC3YG9vb/W7C1irrunS9EYAGHT9bWtB+2/Y
+          8DrHOhTEIEYkt+4/e/Hii+UJBrwEjUyxi8h0XZO1TbbGBQAMNzsWgkm/N5ngv6tVY9HduoyHrsxC
+          YE5BT3YkXiY61vVAPOAwtAOhW37zD5+dnARyh9iNcNF7Q64EkHgCRoyMLtPfSHAmiAABrf5kb/8+
+          bsTe84MJIEj+xoR404XQM/2gPB2nslAMwHnA3QjAwf1JjSGlmU5BO3nEhkECO3PE7Sdkh89xVE0S
+          wAIACJ6vCMD+wZ82gTIvOzekhTzQz/EfxSnoQUQXNXIEBIn0CWVWplZcUTMAEDOArjTZrbp0TREA
+          SwAIwLLf29vf3V2tJniLuzcEoDLIP+I6oKElMXCOfkUCQeoRgkIrAvwqAA2pf3yZSA7YIAPxkw9E
+          AJb7AGB/H+XgBu1AOgzsOnCqwTs7hO2OPFAwpmDNrGpPZ1SNpjqMAXB8yc4QS7gIwHKP2GcXyN/f
+          3z1YNTdlByAIPvTshvpR1UIRUF4lBXFAnyBIAjAbAEgonzUp8hJ8fdiwIiUBWC6BfgBw8AnQv7tL
+          9uBmtFB7mOhWzrEL7Yh78AcsBqCi8F8jdDtxJtAec2ILAawz7ew+kPGl7x+yAH8AxO+xAOwigDv3
+          ljdjyIx/nJA6oPouOA6GnAhX5n48hgRPlO5qpiiODANoGIB6ouKTYm6oyQwEa4/8g2u/DwiA/jsf
+          H/QXI7gYwF3N3U4penGgigy5KKcmky7y7Eg/0abQFkRVTgSA80G1clCjAGoyvmx/G6Yflv/OLiJ4
+          DvQDhoPOvO4OAF//4sfof0YpH2ESd1j8SjS+EeFlAKxH2aYJgDqLANEv0QAufM8SzBcDAAQf3oEv
+          dz48aMYp2CsC2Bmyt5VJj9iAsd06csYWCIwjs8ZoVADMnKwYx8ZoiR8OAILuggbK/ZJMl9D/XBDs
+          fvgz+v/FgnzhDphTcqXM5nijqgYIn7HZIhOJZgGYnzaG1CvZBRYQS8Tj7kBQj04zKn9WnU2hh9D/
+          QebZu7+HGEAAQASQd+iCnUBB/k4AwEVIzQbiO9t1pNzRMTND8kTss9NcEG8H+kgWPDyPoUPE1yID
+          6PQ3QnK2BvQdMBCQX9K/y7SjEOyvDg5Wa/bbt+VNLwJgwkm3Tsmkx5jcMXPH8ZgTw8Chu6dkro0c
+          ADPPY6SASNAkwL5kAMxFrPMnjdKPdQ8IJJfM/3J9+OEuA1j9dAkQa7Iy24pqFwEA56Z7OKnrR22u
+          /xrS/3wbcqY1s6ICQEzPPCT/xQFATskBBlT/rDw/YAHYJ/9hlyHIDoAdWKH66zrr00nXbClKXQxg
+          gbLXJ1H0FK9H5HPif0P7guKa0w/wWdFb5i9reBeGHciOEHKSKk/0fVD58/LvK/2kQncPDpboDZnQ
+          pZAmXdoSHVwAwCcsMYKXCCK0Y6Ilgq0agB1kMT+YA8JCjO/EhZtTnm4AQHpTxLdBtlk+yPTfR/7Z
+          PeD1v/Mhs9Fq9d+wIIgfse4B/9bqwUUAqAJT9xQCPyEG0jYClleA48zwHZDufGG+nAAgO4ArX1gD
+          Vj4P2PYK/cr/zDyw/D+F0J7WA7ag70AGttVlL1Kjxp7Bzj3C2m7lZqxzoiCYc0GD/SGWZ2D+ipff
+          kO6xLADbAKAIN+Q3PxvTf2eg/x6wjxFHN0LAWgdvr2XIKNsTNsdTYJVwGtVpZgeI1U/JPwyuFF8r
+          UYPBGpkCYAPGno/qnv1i/UV4d5+DJx0CCx/dvcvZrrvXcCXgfSTBVhJWJtfARKgrNMtoMSLICGLD
+          n82cKCRSqhECUNL9TVOrIn2ItSbSPei7jfjnY7a+f9oHK1kl5ttwnMz1fSGzOTzlFcbLc5JkJjis
+          4/QPOUJtrIxyfyXaE99ibevRlQCNA1F9MyHuQd/5IUWPmH64T/Tv7wv7owYC00WpmyMMWynWqKrU
+          2+sDoI2TZCe1BvAFehRvyhk4lAAbWQyi5IRg8abkSQBbgU/RJoqCF+g7nwDhPWp/9j7Jed4X/S/W
+          9+MDlF4J+3Ki2z7emmG52Beqn7ZE8BEBSC03a8ASszkmq2DMlHKm7ENwacZqgYPZiIWYLNcEMFDo
+          PmH6QQAg9n2+KxJMtuvggVhclCs2mfj60WN7TQCYkSLeYU2GWRFqDzDslhICh7SCfcmySzSX1AsA
+          gsCyq7kr+A8FYH//TtaeEEveW6217qMpMrxttO3jM3NNAKFDRUz6BsCA4nv27AHlfSzxJjnYbdi0
+          IaBAzwSB9cGGgfoMILHzT3Gjep/7+4P6RPqfH8Dyk584c8w9TjgJ7p06e00A/A5YT+BjzN1/8sXn
+          z04SlmHYK8LlrrF9JpBNduR82lNvxUfasgPEPaL590gDMYADsr7geCa0LrI+6sJbMjem7sP1AFhu
+          XSLGRm9g74sXf7Zq6rO25eIMVuNDs+xPBAExEXkTZlChJYAJbQDHLqv9gn4kHVD8nQTA0XPN7T9w
+          DjwnW7t0HUsM9ocRk3Gt27P04IsX3yzBvCQvNsW2dd1/8vlPwUqSsyreEi9+xcJsVYgxc4vU76n6
+          xyv7n8+f3wHlyXmsWfRTWqLfRxbyuWBl2qfhWu40ZuLUOQO+SQ9Wnz+bYPLNaEdHSP3qixcvPsOU
+          I9oDh5rWsgkj74gxkBqdkACT97ZH3udqta/OJ+3B55y4RO7JEasz0oJBPHSGqZ2dH43KNlsBcChs
+          +4WlAjDJErL7yYMHTbDtnFUrSUC/+vsXL1YPOKPF689xj1MhQQALXHxeftkAEoDsPsC/95h9iGb2
+          xS2rbLofGU4bwCyNAOxsB2BqqtalY1zFU89kcBcf/EK6PWcOnAcIeR58/s1nD5oafQ3fsv9A4Ziw
+          D9jiKXZCcdYTSUfi7wv9B6o+0fPEpZ6xdUcHyFkpt2quHr47Y6bOvY+vAGCbvQUg6DrxIjwHLrzE
+          /uvWZDMDlq056fsF5aPtNIoHLbRj22LAxrnUoea8/4EsPblv9xGABO6w/Fi1DSHrnrL/lyqJqPl2
+          dmzf0k+0V+1VAIBV29PQLyiFri0PRhjCY0OcGHoqYNeLtIFf4/ojp82p2QChBk9NfyA95HnuTT64
+          L54zKiFWn5g5OUDpxdyqKIcZUizlboqwcS8oDYKujcOGzYsBhO5B19r6OHCUKHxBOQkjTRxiZWwg
+          7wJsmeVNNoSAXQlv9UocQKLjcB81z746b+Q9H1CHBDbMcVXtKFfY0NhY/Uj6JYSH1m82lwKYNIkE
+          htxj7XggrjdWbAApCDS7beD15q4b0kXowwzkYy8jqX4V3X3JnRAHgevQUKmNvUMjQR5RPXMxi7HB
+          2BJsWW2wrchfBICbS0Kf1BeRHBC3YylvcvIEYzN/iiarlfiFQktLpbHpAGCvuDDvvC+pKwzba6OG
+          V0RVAyZnigAWnN4Z3ArkDSJ1DQxfAaDdQAgVyAi4Ie0p2iEO9/W4JdJkHHgNI5nfgnvogh1Q4UUG
+          Urfzzu7HByusjDtp0oyaujIR1mD4VOIhT6SkLrRD5XU7AFzDrm47q66I9zb3bBOVtN0VV5soBxow
+          38GRgCVnzgIUayWREZpeATD/SOBy5+AAM1a87Mj6wu6zoyhp4WGv1Z0Af8jay+wAKarUDYnmGLWq
+          rSYShYvEG93RAI5GjRE3uRHReiE8y0DTs+pB6j+RzOGuSi9JEyzKEW8m7OSRtuCR/EVHmy4AwtNz
+          PvVWAHezIycVayLZOTuAl31B5demRapt8LoBbV56oT80uvYSemHQeIDczzekG6uMDZtNkQiHk5bi
+          bksO3fpyAHcBQOg3uVbhdCvB18kfYJTPA1Z4F0gLqTw/Rb/ptCAfAezvDwiQflA+Bz21+SJ3t+Iz
+          kMUaVqjNYJh2i9m0rrsigONWdVopw9iRxTaeqxdTn7DV7RmGaqwLSwGWXvx6UqhOof9gNZFZguzB
+          ynfIN6A/Y7HdXDdBUzaL3bnYvgRQjAKgKz2LUagZdpX7N8Co2ak0PNV7qz97cTABb4jqwwX/B73q
+          PamaaubnQ5ReShpaqkyJs0KUTpFvZso4So4jt8odHQFhVwOQxBHC9/kYxX3KWhrWfsrdifVk9eJ/
+          fPOsYaeBVAq9mnpGQN32B3furMj1IQX04T1YfhwfsI7lRjmf4teh/5sdabISnhDg99NH4SoA1JMz
+          LJgG1ZCjYsyga0nB+nqy/Ok3q5OTRWCw4BLw+tMWoNEMNi13dz/5+GNOmoDn9gHBFS0Q2edn/8SY
+          kZ6wzomSyqwcHo0LTq8EkJTPVQTYrOUZGDFh07brV0sMc2CjSuUTbFCbD9uOavTje7gB//newR76
+          T27uhD2N9FsbM/Q5ovIUhMV62SHOzfnPSwGMZZgdOTe3EvRhrNb1sP41p0d9QT7Sz4KSerJid372
+          szv3gH2Q/vkT8mtVilW5ERbLqz7yAKLOJJgyML4IQGu0fdgUAHQvDAoG77jd4GCGJy4V91kEOOlg
+          AAFAGbgHy98EVj9zy7NAXGOT7ijBYgadoQBy6bbUo68GEA5bzPaj7y+rYaqRWpCtR0WVsMGDiJj6
+          UoO2SZc1LckQgPQy+5CORF88MyS8k5yS8bKX4hBh5z1aiq5oyrwAwFMaSaBcp498WcovGVPem/K6
+          06mqpFACyD6XWS+59+Tgg0mDW0MA2NwZ1VnDiJyhZkvDCfsZ9pSDM0E6GvP3mKx6lS9EANii1IfB
+          qB6LeQgP2ITUwhGlhPKgnvzPDhxEEjAMCK3vgxX75HNw/C3GcBklKKhoh5vw8EfkbXckxXkkPGb5
+          PivbYl/eAfAWUmpD0wW1JMZVI4PI+WkvHxKzT4RuEfdOE4A6TfPbYAd2Dz7rUf+1NQ+X0WYFq/Pq
+          VqgetKt09Z+XAQQQBsF8CQAsQKrbdNYQTDG25V1MfqmfzdMyc/xwX+xAnYb3NavnmDPE956uQ7lP
+          iDeqGhK6s7WsXgUA3sgWaWcLAIvBDESxQbXQwCvFS6u2efTDQgnVdVLrauoleZ7EI9w2PQDIby1m
+          R7d8npnm7yGqxPkpWp9tAED5QdBf963H6F+/8JXyy+KHbfFDfrnhTlD9eb2H5d6av008ALHB19ML
+          77Llo/H7TQdu1MOOzdkWLUSaxNvNMb2B74JK3qFSbf0p3855ubVzU33p8VUIoJG4JN+BccB3TUO3
+          WjZB/poB4J/BL+jWQqsfXk7pE+ij3fB7uG8LP56mnsZvWrNdC+F8HmxuWwjxSPm/9HLY50EG2InL
+          vBy6ZnidxixkS74ZTIxw59gk8JcaouJ13dLtt9kB/8dt+6VPhRBvAVAwKoRiFDmJWtwCAHyhoZu+
+          JgBhAKAateD8YZXsywCq9mmwyEvbdoDbr/Bubaedq9XoLlnreVKYpEJC1uGjSGbIHRg/H+KMgn4b
+          hmXgwb9CIW3bAerKQNIK92a7JcZ9yoYsf0psPSl/qouVG80uXt6BwGnRNn+Kdzu56nbOkDk3BGLZ
+          JBjHH+PjaFtkIGdcaHppB8SV4NKA5xWhtMQRmXYzdlPoj5y6xXbsC+UcmHe5ZtKG0g6oCUc+HG6d
+          PcaplYyIRX9mZnmm69UAiiscJvQavC3dwzFPUizi+PeMZOzM2ZBCrvZq3ZwGizMHefYkUHlPs9tY
+          RjRFAGhnnK+RlOdlADhsoK6Zl4WKhYC9GGWhSN+GIZlVuKMKIKsgcSY8u9PzHMvTAG/rL3Gnk7kS
+          gKSdq5pVyRqTPKAhwQiuMFOPyWqfJZkR0B6IEPM4mVWXVTJ49L75kK2hlN587tg8j9MSL0VkrwYg
+          cQ/RPjdDZpeZvdLNoZWfeqP1PfoLk0My0KXUnkBMeJpG648iLD1flQhPVj0iGVN484w//In2VCGA
+          S/NC6FKwqFCcShlzd+Sc1vZUCDT0i5pCo7RWyUQ0YMsDDtiyVwpwdjsxQ8xEszEpHLjIyYQjLbNa
+          Ui9n1asisrJVaEHpF5dXdQi4R5lFnm/y7Kg5bpEwRVjMg0pdJ4PoSv9Umikc1zKsn5tBuDLL2uwu
+          QiwWZ+aUAYRLAaA+rfup4ZjSlB6ElE1g1WKUHae5TyncW94CWyRWgg7xKf2eEeBfaioF05SOIzFs
+          buFi0EiGnXRUzeOo6+aCE54QgCkteK634ZZW6r04yeVQho2EXBITp7wHuguapBPi4f8tWUPlfwzy
+          3VBJ4kxyfMkVwnCls1cqdIfjduyCaPAyVAoGuYvCzZQtBQo1ONY9qEf8IxIwlcJSrstgosK6shg0
+          SgsJMSldIb2Owt7nzJaMx0euio3ury03jubJOJ5mVTVipE09hJH0SzNtuWMWeaOSDeS7umKF5EOz
+          t4s88KjUoq8qdBuqLFqWI0rIRVf4V8K6mhOnxaESMcZpbJrHBY5NGJwkm0FWUsqfn5IF05ZsqxOC
+                 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
+          EOF_ICON
+      - name: Terima lisensi SDK
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: adjm-scan-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
